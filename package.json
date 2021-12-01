@@ -10,12 +10,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@ckb-lumos/base": "^0.18.0-rc1",
-    "@ckb-lumos/common-scripts": "^0.18.0-rc1",
-    "@ckb-lumos/config-manager": "^0.18.0-rc1",
-    "@ckb-lumos/hd": "^0.18.0-rc1",
-    "@ckb-lumos/helpers": "^0.18.0-rc1",
-    "@ckb-lumos/rpc": "^0.18.0-rc1",
+    "@ckb-lumos/base": "^0.18.0-rc2",
+    "@ckb-lumos/ckb-indexer": "^0.18.0-rc2",
+    "@ckb-lumos/common-scripts": "^0.18.0-rc2",
+    "@ckb-lumos/config-manager": "^0.18.0-rc2",
+    "@ckb-lumos/hd": "^0.18.0-rc2",
+    "@ckb-lumos/helpers": "^0.18.0-rc2",
+    "@ckb-lumos/rpc": "^0.18.0-rc2",
     "@ckitjs/easy-byte": "^0.0.2",
     "@types/node": "^16.11.6",
     "axios": "^0.24.0",
@@ -28,6 +29,7 @@
     "chai": "^4.3.4",
     "mocha": "^9.1.3",
     "nyc": "^15.1.0",
-    "ts-node": "^10.4.0"
+    "ts-node": "^10.4.0",
+    "typescript": "^4.5.2"
   }
 }

@@ -1,44 +1,64 @@
-import { TransactionSkeletonType, minimalCellCapacity,
+import {
+  TransactionSkeletonType,
+  minimalCellCapacity,
   Options,
-  parseAddress, } from "@ckb-lumos/helpers";
-import { common } from '@ckb-lumos/common-scripts';
+  parseAddress,
+  createTransactionFromSkeleton,
+} from "@ckb-lumos/helpers";
 import { RPC } from "@ckb-lumos/rpc";
-import { Script, CellProvider, Cell, utils, OutPoint, values,
+import {
+  Script,
+  CellProvider,
+  Cell,
+  utils,
+  OutPoint,
+  values,
   core,
-  WitnessArgs, } from "@ckb-lumos/base";
+  WitnessArgs,
+  Transaction,
+} from "@ckb-lumos/base";
+import { SerializeTransaction } from "@ckb-lumos/base/lib/core";
 import { Reader, normalizers } from "ckb-js-toolkit";
-import { Config, getConfig } from '@ckb-lumos/config-manager';
+import { Config, getConfig } from "@ckb-lumos/config-manager";
 import { Set } from "immutable";
 const { ScriptValue } = values;
+import { FromInfo, parseFromInfo, MultisigScript } from "./from_info";
 
 export function bytesToHex(bytes: Uint8Array): string {
-  return `0x${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+  return `0x${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-export async function findCellsByLock(lockScript: Script, cellProvider: CellProvider): Promise<Cell[]> {
-  const collector = cellProvider.collector({ lock: lockScript });
+export async function findCellsByLock(
+  lockScript: Script,
+  cellProvider: CellProvider
+): Promise<Cell[]> {
+  const collector = cellProvider.collector({
+    lock: lockScript,
+    type: "empty",
+    data: "0x",
+  });
   const cells: Cell[] = [];
   for await (const cell of collector.collect()) {
     cells.push(cell);
   }
   return cells;
-};
+}
 
 export async function completeTx(
   txSkeleton: TransactionSkeletonType,
-  fromAddress: string,
-  config?: Config,
+  fromInfo: FromInfo,
+  config?: Config
 ): Promise<TransactionSkeletonType> {
   const inputCapacity = txSkeleton
-    .get('inputs')
+    .get("inputs")
     .map((c) => BigInt(c.cell_output.capacity))
     .reduce((a, b) => a + b, BigInt(0));
   const outputCapacity = txSkeleton
-    .get('outputs')
+    .get("outputs")
     .map((c) => BigInt(c.cell_output.capacity))
     .reduce((a, b) => a + b, BigInt(0));
   const needCapacity = outputCapacity - inputCapacity;
-  txSkeleton = await injectCapacity(txSkeleton, fromAddress, needCapacity, {
+  txSkeleton = await injectCapacity(txSkeleton, fromInfo, needCapacity, {
     config: config,
   });
   // console.log(txSkeleton.get("inputs").get(0));
@@ -49,13 +69,24 @@ export async function completeTx(
 
 export async function injectCapacity(
   txSkeleton: TransactionSkeletonType,
-  fromAddress: string,
+  fromInfo: FromInfo,
   amount: bigint,
   { config = undefined }: Options = {}
 ): Promise<TransactionSkeletonType> {
   config = config || getConfig();
-  const fromScript = parseAddress(fromAddress, { config });
+
+  const { fromScript, multisigScript } = parseFromInfo(fromInfo, { config });
+
   amount = BigInt(amount);
+  let changeCapacity: bigint = BigInt(10) ** BigInt(8);
+  const changeCell: Cell = {
+    cell_output: {
+      capacity: "0x0",
+      lock: fromScript,
+      type: undefined,
+    },
+    data: "0x",
+  };
 
   if (amount > 0n) {
     const cellProvider = txSkeleton.get("cellProvider");
@@ -63,19 +94,11 @@ export async function injectCapacity(
     const cellCollector = cellProvider.collector({
       lock: fromScript,
       type: "empty",
+      data: "0x",
     });
 
-    const changeCell: Cell = {
-      cell_output: {
-        capacity: "0x0",
-        lock: fromScript,
-        type: undefined,
-      },
-      data: "0x",
-    };
     const minimalChangeCapacity: bigint = minimalCellCapacity(changeCell);
-
-    let changeCapacity: bigint = 0n;
+    amount = amount + BigInt(10) ** BigInt(8);
 
     let previousInputs = Set<string>();
     for (const input of txSkeleton.get("inputs")) {
@@ -91,7 +114,7 @@ export async function injectCapacity(
         )
       )
         continue;
-      txSkeleton = txSkeleton.update("inputs", (inputs) => 
+      txSkeleton = txSkeleton.update("inputs", (inputs) =>
         inputs.push(inputCell)
       );
       console.log("INPUTCELL:", inputCell);
@@ -141,11 +164,22 @@ export async function injectCapacity(
       );
     }
     let witness: string = txSkeleton.get("witnesses").get(firstIndex)!;
-    const newWitnessArgs: WitnessArgs = {
-      /* 65-byte zeros in hex */
-      lock:
-        "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    };
+    let newWitnessArgs: WitnessArgs;
+    const SECP_SIGNATURE_PLACEHOLDER = "0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+    if (typeof fromInfo !== "string") {
+      newWitnessArgs = {
+        lock:
+          "0x" +
+          multisigScript!.slice(2) +
+          SECP_SIGNATURE_PLACEHOLDER.slice(2).repeat(
+            (fromInfo as MultisigScript).M
+          ),
+      }
+    } else {
+      newWitnessArgs = { lock: SECP_SIGNATURE_PLACEHOLDER };
+    }
+
     if (witness !== "0x") {
       const witnessArgs = new core.WitnessArgs(new Reader(witness));
       const lock = witnessArgs.getLock();
@@ -180,35 +214,88 @@ export async function injectCapacity(
     );
   }
 
+  const txFee = calculateTxFee(txSkeleton);
+  changeCapacity = changeCapacity - txFee;
+
+  txSkeleton = txSkeleton.update("outputs", (outputs) => {
+    return outputs.pop();
+  });
+  if (changeCapacity > BigInt(0)) {
+    changeCell.cell_output.capacity = "0x" + changeCapacity.toString(16);
+    txSkeleton = txSkeleton.update("outputs", (outputs) =>
+      outputs.push(changeCell)
+    );
+  }
+
   return txSkeleton;
 }
 
-export function updateOutputs(txSkeleton: TransactionSkeletonType, output: Cell): TransactionSkeletonType {
+function getTransactionSize(txSkeleton: TransactionSkeletonType): number {
+  const tx = createTransactionFromSkeleton(txSkeleton);
+  return getTransactionSizeByTx(tx);
+}
+
+function getTransactionSizeByTx(tx: Transaction): number {
+  const serializedTx = SerializeTransaction(
+    normalizers.NormalizeTransaction(tx)
+  );
+  // 4 is serialized offset bytesize
+  const size = serializedTx.byteLength + 4;
+  return size;
+}
+
+function calculateFee(size: number, feeRate: bigint): bigint {
+  const ratio = 1000n;
+  const base = BigInt(size) * feeRate;
+  const fee = base / ratio;
+  if (fee * ratio < base) {
+    return fee + 1n;
+  }
+  return fee;
+}
+
+export function calculateTxFee(txSkeleton: TransactionSkeletonType): bigint {
+  const feeRate = BigInt(1000);
+  const txSize = getTransactionSize(txSkeleton);
+  return calculateFee(txSize, feeRate);
+}
+
+export function updateOutputs(
+  txSkeleton: TransactionSkeletonType,
+  output: Cell
+): TransactionSkeletonType {
   const cellCapacity = minimalCellCapacity(output);
   output.cell_output.capacity = `0x${cellCapacity.toString(16)}`;
-  txSkeleton = txSkeleton.update('outputs', (outputs) => {
+  txSkeleton = txSkeleton.update("outputs", (outputs) => {
     return outputs.push(output);
   });
 
   return txSkeleton;
 }
 
-export function updateCellDeps(txSkeleton: TransactionSkeletonType, config?: Config): TransactionSkeletonType {
-  txSkeleton = txSkeleton.update('cellDeps', (cellDeps) => {
+export function updateCellDeps(
+  txSkeleton: TransactionSkeletonType,
+  config?: Config
+): TransactionSkeletonType {
+  txSkeleton = txSkeleton.update("cellDeps", (cellDeps) => {
     return cellDeps.clear();
   });
   config = config || getConfig();
   const secp256k1Config = config.SCRIPTS.SECP256K1_BLAKE160!;
   const secp256k1MultiSigConfig = config.SCRIPTS.SECP256K1_BLAKE160_MULTISIG!;
-  txSkeleton = txSkeleton.update('cellDeps', (cellDeps) => {
-    return cellDeps.push({
-      out_point: { tx_hash: secp256k1Config.TX_HASH, index: secp256k1Config.INDEX },
-      dep_type: secp256k1Config.DEP_TYPE,
-    }, 
-    // {
-    //   out_point: { tx_hash: secp256k1MultiSigConfig.TX_HASH, index: secp256k1MultiSigConfig.INDEX },
-    //   dep_type: secp256k1MultiSigConfig.DEP_TYPE,
-    // }
+  txSkeleton = txSkeleton.update("cellDeps", (cellDeps) => {
+    return cellDeps.push(
+      {
+        out_point: {
+          tx_hash: secp256k1Config.TX_HASH,
+          index: secp256k1Config.INDEX,
+        },
+        dep_type: secp256k1Config.DEP_TYPE,
+      },
+      {
+        out_point: { tx_hash: secp256k1MultiSigConfig.TX_HASH, index: secp256k1MultiSigConfig.INDEX },
+        dep_type: secp256k1MultiSigConfig.DEP_TYPE,
+      }
     );
   });
 
@@ -217,10 +304,15 @@ export function updateCellDeps(txSkeleton: TransactionSkeletonType, config?: Con
 
 export function calculateCodeHashByBin(scriptBin: Uint8Array): string {
   const bin = scriptBin.valueOf();
-  return new utils.CKBHasher().update(bin.buffer.slice(bin.byteOffset, bin.byteLength + bin.byteOffset)).digestHex();
+  return new utils.CKBHasher()
+    .update(bin.buffer.slice(bin.byteOffset, bin.byteLength + bin.byteOffset))
+    .digestHex();
 }
 
-export async function getDataHash(outPoint: OutPoint, rpc: RPC): Promise<string> {
+export async function getDataHash(
+  outPoint: OutPoint,
+  rpc: RPC
+): Promise<string> {
   const txHash = outPoint.tx_hash;
   const index = parseInt(outPoint.index, 10);
   const tx = await rpc.get_transaction(txHash);
