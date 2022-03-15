@@ -1,10 +1,10 @@
 import { expect } from 'chai';
-import { parseAddress, TransactionSkeletonType, sealTransaction } from '@ckb-lumos/helpers';
+import { parseAddress, TransactionSkeletonType, sealTransaction, TransactionSkeleton } from '@ckb-lumos/helpers';
 import { common } from '@ckb-lumos/common-scripts';
 import { key } from "@ckb-lumos/hd";
 import { RPC } from "@ckb-lumos/rpc";
 import { Indexer } from '@ckb-lumos/ckb-indexer';
-import { Script, CellProvider } from '@ckb-lumos/base';
+import { Script, CellProvider, Cell } from '@ckb-lumos/base';
 import * as fs from 'fs';
 import { compareScriptBinaryWithOnChainData, generateDeployWithTypeIdTx, generateDeployWithDataTx, generateUpgradeTypeIdDataTx, payFee, getScriptConfig, UpgradeOptions, DeployOptions } from '../src/generator';
 import { calculateTxFee } from "../src/utils";
@@ -104,12 +104,14 @@ async function signAndSendTransaction(
   rpc: RPC
 ): Promise<string> {
   txSkeleton = common.prepareSigningEntries(txSkeleton);
-  console.log("signingEntries: ", txSkeleton.get("signingEntries").get(0))
+  console.log("txSkeleton: ", JSON.stringify(txSkeleton, null, 4));
   const message = txSkeleton.get("signingEntries").get(0)?.message;
   const Sig = key.signRecoverable(message!, privatekey);
+  console.log("sig: ", Sig);
   const tx = sealTransaction(txSkeleton, [Sig]);
+  console.log("tx: ", JSON.stringify(tx, null, 4));
   const hash = await rpc.send_transaction(tx, "passthrough");
-  console.log("The transaction hash is", hash);
+  console.log("hash: ", hash);
   return hash;
 }
 
@@ -201,38 +203,17 @@ async function waitForTransactionCommitted(
   return;
 }
 
-// it('DeployWithData', async function() {
-//   let txSkeleton = await generateDeployWithDataTx(opt);
-//   // txSkeleton = await payFeeConst(txSkeleton)
-//   // const scriptConfig = getScriptConfig(txSkeleton, 0);
-//   // console.log("scriptconfig: ", scriptConfig);
-//   const txHash = await signAndSendTransaction(txSkeleton, ALICE.PRIVATE_KEY, rpc);
-//   const outPoint = {
-//     tx_hash: txHash,
-//     index: "0x0"
-//   }
-//   const compareResult = await compareScriptBinaryWithOnChainData(sudtBin, outPoint, rpc);
-//   expect(compareResult).equal(true);
-// });
+it('DeployWithData', async function() {
+  let txSkeleton = await generateDeployWithDataTx(opt);
+  // txSkeleton = await payFeeConst(txSkeleton)
+  // const scriptConfig = getScriptConfig(txSkeleton, 0);
+  // console.log("scriptconfig: ", scriptConfig);
+  console.log("inputs", txSkeleton.inputs);
+  console.log("outputs", txSkeleton.outputs);
+  console.log("witness", txSkeleton.witnesses);
+  console.log("celldep", txSkeleton.cellDeps);
 
-it('DeployWithData by multisig', async function() {
-  const multiLockScript: Script = {
-    code_hash: "0x5c5069eb0857efc65e1bca0c07df34c31663b3622fd3876c876320fc9634e2a8",
-    hash_type: "type",
-    args: "0xed20af7322823d0dc33bfb215486a05082669905",
-  }
-  const deployOptions: DeployOptions = {
-    cellProvider: indexer as CellProvider,
-    scriptBinary: sudtBin,
-    fromInfo: FROMINFO,
-    config: AGGRON4,
-  };
-  const privKeys = [PRIVKEY1, PRIVKEY2];
-
-  let txSkeleton = await generateDeployWithDataTx(deployOptions);
-  const txFee = calculateTxFee(txSkeleton);
-  console.log(txFee);
-  const txHash = await signAndSendMultisigTransaction(txSkeleton, privKeys, rpc);
+  const txHash = await signAndSendTransaction(txSkeleton, ALICE.PRIVATE_KEY, rpc);
   const outPoint = {
     tx_hash: txHash,
     index: "0x0"
@@ -240,6 +221,32 @@ it('DeployWithData by multisig', async function() {
   const compareResult = await compareScriptBinaryWithOnChainData(sudtBin, outPoint, rpc);
   expect(compareResult).equal(true);
 });
+
+// it('DeployWithData by multisig', async function() {
+//   const multiLockScript: Script = {
+//     code_hash: "0x5c5069eb0857efc65e1bca0c07df34c31663b3622fd3876c876320fc9634e2a8",
+//     hash_type: "type",
+//     args: "0xed20af7322823d0dc33bfb215486a05082669905",
+//   }
+//   const deployOptions: DeployOptions = {
+//     cellProvider: indexer as CellProvider,
+//     scriptBinary: sudtBin,
+//     fromInfo: FROMINFO,
+//     config: AGGRON4,
+//   };
+//   const privKeys = [PRIVKEY1, PRIVKEY2];
+
+//   let txSkeleton = await generateDeployWithDataTx(deployOptions);
+//   const txFee = calculateTxFee(txSkeleton);
+//   console.log(txFee);
+//   const txHash = await signAndSendMultisigTransaction(txSkeleton, privKeys, rpc);
+//   const outPoint = {
+//     tx_hash: txHash,
+//     index: "0x0"
+//   }
+//   const compareResult = await compareScriptBinaryWithOnChainData(sudtBin, outPoint, rpc);
+//   expect(compareResult).equal(true);
+// });
 
 
 
